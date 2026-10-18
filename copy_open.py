@@ -6,11 +6,8 @@ import hashlib
 import urllib.request
 import urllib.error
 
-# خواندن کلیدهای حساب اصلی (Master) از Secrets
 MASTER_KEY = os.environ.get("MASTER_API_KEY")
 MASTER_SECRET = os.environ.get("MASTER_API_SECRET")
-
-# خواندن اطلاعات Supabase از Secrets
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 
@@ -55,24 +52,35 @@ def main():
     print("🚀 شروع کپی معاملات...")
     
     # ۱. خواندن پوزیشن‌های باز تو
-    master_positions = request("GET", "/futures/positions?status=OPENED", MASTER_KEY, MASTER_SECRET)
-    if not master_positions or not master_positions.get("items"):
+    master_positions = request("GET", "/futures/positions", MASTER_KEY, MASTER_SECRET)
+    if not master_positions:
+        print("خطا در خواندن پوزیشن‌ها.")
+        return
+
+    # فیلتر کردن فقط پوزیشن‌هایی که واقعاً باز هستند
+    items = master_positions.get("items", []) if isinstance(master_positions, dict) else master_positions
+    open_items = [p for p in items if p.get("status") == "OPENED" and p.get("isActive") == True]
+    
+    if not open_items:
         print("حساب شما هیچ پوزیشن بازی ندارد.")
         return
 
-    items = master_positions["items"]
-    print(f"تعداد {len(items)} پوزیشن باز پیدا شد.")
+    print(f"تعداد {len(open_items)} پوزیشن واقعاً باز پیدا شد.")
     
     # ۲. گرفتن لیست کاربران از Supabase
     users = get_active_users()
     print(f"تعداد {len(users)} کاربر برای کپی پیدا شد.")
     
+    if len(users) == 0:
+        print("هیچ کاربری برای کپی پیدا نشد. لطفا کلیدهای دیتابیس (Secrets) را چک کنید.")
+        return
+
     # ۳. باز کردن معامله برای هر کاربر
-    for p in items:
+    for p in open_items:
         symbol = p["symbol"]
         side = p["side"]
         leverage = p["leverage"]
-        cost = "1.0" # مارجین ۱ دلاری برای تست (بعدا میشه درصدی کرد)
+        cost = "1.0" 
         
         for user in users:
             print(f"باز کردن {symbol} برای کاربر...")
@@ -83,7 +91,7 @@ def main():
             res = request("POST", "/futures/positions", user["api_key"], user["api_secret"], order)
             if res:
                 print("✅ موفق")
-            time.sleep(1) # تاخیر برای جلوگیری از بلاک شدن
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()
