@@ -32,7 +32,12 @@ def request(method, uri, api_key, api_secret):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read() or b"{}")
-    except Exception:
+    except urllib.error.HTTPError as e:
+        # 🌟 چاپ خطای دقیق صرافی در لاگ‌ها
+        print(f"❌ خطای HTTP {e.code} برای {api_key[:5]}: {e.read().decode(errors='replace')}")
+        return None
+    except Exception as e:
+        print(f"❌ خطای شبکه برای {api_key[:5]}: {e}")
         return None
 
 def get_active_users():
@@ -41,30 +46,40 @@ def get_active_users():
     try:
         with urllib.request.urlopen(req) as resp:
             return json.loads(resp.read())
-    except Exception:
+    except Exception as e:
+        print(f"❌ خطا در خواندن دیتابیس: {e}")
         return []
 
 def update_stats_in_db(api_key, balance, pos_count, pnl, has_tpsl):
+    # ۱. پاک کردن رکورد قبلی (برای جلوگیری از خطای تکراری)
+    delete_url = f"{DB_URL}/rest/v1/admin_stats?api_key=eq.{api_key}"
+    del_headers = {"apikey": DB_KEY, "Authorization": f"Bearer {DB_KEY}"}
+    try:
+        req_del = urllib.request.Request(delete_url, headers=del_headers, method="DELETE")
+        urllib.request.urlopen(req_del)
+    except:
+        pass
+
+    # ۲. درج رکورد جدید
     url = f"{DB_URL}/rest/v1/admin_stats"
     headers = {
-        "apikey": DB_KEY, "Authorization": f"Bearer {DB_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
+        "apikey": DB_KEY, 
+        "Authorization": f"Bearer {DB_KEY}",
+        "Content-Type": "application/json"
     }
     body = {
         "api_key": api_key,
         "balance": balance,
         "open_positions_count": pos_count,
         "total_unrealized_pnl": pnl,
-        "has_tpsl": has_tpsl,
-        "updated_at": "now()"
+        "has_tpsl": has_tpsl
     }
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req) as resp:
             pass
     except Exception as e:
-        print(f"خطا در ذخیره اطلاعات {api_key[:5]}: {e}")
+        print(f"❌ خطا در ذخیره اطلاعات {api_key[:5]}: {e}")
 
 # ==========================================
 # ۳. اجرای اصلی
@@ -73,15 +88,23 @@ def main():
     print("📊 شروع بروزرسانی آمار ادمین...")
     users = get_active_users()
     
+    if not users:
+        print("⚠️ هیچ کاربری در دیتابیس پیدا نشد.")
+        return
+        
+    print(f"👥 تعداد {len(users)} کاربر برای بررسی پیدا شد.")
+    
     for u in users:
         api_key = u["api_key"]
         api_secret = u["api_secret"]
         
+        # ۱. گرفتن موجودی
         assets = request("GET", f"{FUTURES_PREFIX}/assets", api_key, api_secret)
         balance = 0.0
         if assets and "summary" in assets:
             balance = float(assets["summary"].get("totalAssets", 0))
             
+        # ۲. گرفتن پوزیشن‌ها
         positions = request("GET", f"{FUTURES_PREFIX}/positions", api_key, api_secret)
         pos_count = 0
         total_pnl = 0.0
@@ -97,7 +120,9 @@ def main():
                 if p.get("stopLoss") and p.get("takeProfit"):
                     has_tpsl = True
                     
-        print(f"👤 کاربر {api_key[:5]}: موجودی={balance}, پوزیشن={pos_count}, PnL={total_pnl}")
+        print(f"👤 کاربر {api_key[:5]}: موجودی={balance:.2f}$, پوزیشن={pos_count}, PnL={total_pnl:.2f}$, TP/SL={has_tpsl}")
+        
+        # ۳. ذخیره در دیتابیس
         update_stats_in_db(api_key, balance, pos_count, total_pnl, has_tpsl)
         time.sleep(1)
 
