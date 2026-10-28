@@ -17,11 +17,6 @@ DB_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 BASE_URL = "https://apiv2.thetruetrade.io"
 FUTURES_PREFIX = "/futures"
 
-# تنظیمات کپی‌تریدینگ
-FOLLOWER_MARGIN = "1.0"   # مارجین هر کاربر (۱ دلار)
-STOP_LOSS_PCT = 0.01      # حد ضرر ۱ درصد
-TAKE_PROFIT_PCT = 0.05    # حد سود ۵ درصد
-
 # ==========================================
 # ۲. توابع API
 # ==========================================
@@ -63,32 +58,64 @@ def get_active_users():
         print(f"خطا در خواندن دیتابیس: {e}")
         return []
 
+def get_balance(api_key, api_secret):
+    """دریافت موجودی کل حساب فیوچرز"""
+    res = request("GET", f"{FUTURES_PREFIX}/assets", api_key, api_secret)
+    if res and "summary" in res:
+        return float(res["summary"].get("totalAssets", 0))
+    return 0.0
+
 # ==========================================
-# ۳. توابع کمکی برای هر کاربر
+# ۳. منطق کپی برای هر کاربر
 # ==========================================
-def open_trade_for_user(user_key, user_secret, symbol, side, leverage):
-    print(f"⏳ ارسال سفارش برای کاربر {user_key[:5]}...")
+def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
+    symbol = master_position["symbol"]
+    side = master_position["side"]
+    leverage = master_position["leverage"]
+    
+    # محاسبه مارجینی که تو استفاده کردی
+    master_margin = float(master_position.get("initialMargin", 0))
+    
+    # محاسبه درصد ریسک تو (مارجین به کل موجودی)
+    if master_balance <= 0:
+        print("❌ موجودی حساب اصلی صفر است.")
+        return
+    risk_percent = master_margin / master_balance
+    
+    # گرفتن موجودی کاربر
+    user_balance = get_balance(user_key, user_secret)
+    if user_balance <= 0:
+        print(f"❌ کاربر {user_key[:5]} موجودی ندارد.")
+        return
+        
+    # محاسبه مارجین برای کاربر (بر اساس همون درصد)
+    user_margin = round(user_balance * risk_percent, 2)
+    
+    # صرافی معمولاً مارجین کمتر از 0.1 دلار رو قبول نمیکنه
+    if user_margin < 0.1:
+        print(f"⚠️ مارجین محاسبه شده برای کاربر {user_key[:5]} خیلی کم است ({user_margin}$). رد شد.")
+        return
+
+    print(f"⏳ باز کردن {side} برای کاربر {user_key[:5]} با مارجین {user_margin}$ و اهرم {leverage}x...")
     
     order_body = {
         "symbol": symbol,
         "side": side,
         "tradeType": "MARKET",
         "leverage": leverage,
-        "cost": FOLLOWER_MARGIN
+        "cost": str(user_margin)
     }
     
     response = request("POST", f"{FUTURES_PREFIX}/positions", user_key, user_secret, order_body)
     if response is None:
-        print(f"❌ سفارش برای کاربر {user_key[:5]} ثبت نشد.")
         return False
         
     print(f"✅ سفارش برای کاربر {user_key[:5]} ارسال شد. در حال جستجوی پوزیشن...")
-    time.sleep(3) # صبر برای ثبت پوزیشن
+    time.sleep(3)
     
     # پیدا کردن پوزیشن باز
     positions = request("GET", f"{FUTURES_PREFIX}/positions", user_key, user_secret)
-    if positions is None:
-        return False
+    if positions is None: return False
         
     items = positions.get("items", []) if isinstance(positions, dict) else positions
     target_position = None
@@ -102,43 +129,46 @@ def open_trade_for_user(user_key, user_secret, symbol, side, leverage):
         return False
         
     position_id = target_position.get("id")
-    entry_price = float(target_position.get("entryPrice"))
-    print(f"✅ پوزیشن کاربر {user_key[:5]} پیدا شد (ID: {position_id}, قیمت: {entry_price})")
     
-    # تنظیم TP/SL
-    if side == "LONG":
-        sl_price = round(entry_price * (1 - STOP_LOSS_PCT), 2)
-        tp_price = round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
-    else:
-        sl_price = round(entry_price * (1 + STOP_LOSS_PCT), 2)
-        tp_price = round(entry_price * (1 - TAKE_PROFIT_PCT), 2)
-        
+    # 🌟 کپی کردن دقیق حد ضرر و حد سود از حساب اصلی (نه درصدی)
+    master_sl = master_position.get("stopLoss")
+    master_tp = master_position.get("takeProfit")
+    
+    if not master_sl or not master_tp:
+        print(f"⚠️ معامله اصلی حد ضرر یا حد سود ندارد. برای کاربر تنظیم نمیشود.")
+        return True
+
     tpsl_body = {
-        "stopLoss": str(sl_price),
-        "takeProfit": str(tp_price),
+        "stopLoss": str(master_sl),
+        "takeProfit": str(master_tp),
         "stopLossOrderType": "STOP_MARKET",
         "takeProfitOrderType": "TAKE_PROFIT_MARKET"
     }
     
     tpsl_response = request("PATCH", f"{FUTURES_PREFIX}/positions/{position_id}/tpsl", user_key, user_secret, tpsl_body)
     if tpsl_response is not None:
-        print(f"✅ TP/SL برای کاربر {user_key[:5]} تنظیم شد.")
+        print(f"✅ TP/SL دقیقا مثل حساب اصلی برای {user_key[:5]} تنظیم شد. (SL: {master_sl}, TP: {master_tp})")
         return True
     else:
-        print(f"⚠️ خطا در تنظیم TP/SL برای کاربر {user_key[:5]}.")
+        print(f"⚠️ خطا در تنظیم TP/SL برای {user_key[:5]}.")
         return False
 
 # ==========================================
 # ۴. اجرای اصلی
 # ==========================================
 def main():
-    print("🚀 شروع کپی معاملات (نسخه نهایی)...")
+    print("🚀 شروع کپی معاملات نسبی...")
     
-    # ۱. خواندن پوزیشن‌های باز حساب اصلی
-    master_positions = request("GET", f"{FUTURES_PREFIX}/positions", MASTER_KEY, MASTER_SECRET)
-    if not master_positions:
-        print("خطا در خواندن پوزیشن‌های حساب اصلی.")
+    # ۱. گرفتن موجودی حساب اصلی
+    master_balance = get_balance(MASTER_KEY, MASTER_SECRET)
+    print(f"💰 موجودی حساب اصلی: {master_balance}$")
+    if master_balance <= 0:
+        print("❌ موجودی حساب اصلی صفر است.")
         return
+        
+    # ۲. خواندن پوزیشن‌های باز حساب اصلی
+    master_positions = request("GET", f"{FUTURES_PREFIX}/positions", MASTER_KEY, MASTER_SECRET)
+    if not master_positions: return
 
     items = master_positions.get("items", []) if isinstance(master_positions, dict) else master_positions
     open_items = [p for p in items if p.get("status") == "OPENED" and p.get("isActive") == True]
@@ -149,24 +179,17 @@ def main():
 
     print(f"تعداد {len(open_items)} پوزیشن باز در حساب اصلی پیدا شد.")
     
-    # ۲. گرفتن لیست کاربران
+    # ۳. گرفتن لیست کاربران
     users = get_active_users()
     print(f"تعداد {len(users)} کاربر برای کپی پیدا شد.")
-    
-    if len(users) == 0:
-        print("هیچ کاربری برای کپی پیدا نشد.")
-        return
+    if len(users) == 0: return
 
-    # ۳. کپی کردن معاملات برای هر کاربر
+    # ۴. کپی برای هر کاربر
     for p in open_items:
-        symbol = p["symbol"]
-        side = p["side"]
-        leverage = p["leverage"]
-        
-        print(f"\n--- کپی کردن {symbol} {side} ---")
+        print(f"\n--- کپی کردن {p['symbol']} {p['side']} ---")
         for user in users:
-            open_trade_for_user(user["api_key"], user["api_secret"], symbol, side, leverage)
-            time.sleep(1) # فاصله بین کاربران
+            copy_trade_for_user(p, user["api_key"], user["api_secret"], master_balance)
+            time.sleep(1)
 
 if __name__ == "__main__":
     main()
