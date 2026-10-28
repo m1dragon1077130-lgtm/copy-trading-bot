@@ -37,7 +37,15 @@ def request(method, uri, api_key, api_secret, body=None):
     req = urllib.request.Request(BASE_URL + uri, data=data, headers=headers, method=method.upper())
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read() or b"{}")
+            raw = resp.read()
+            result = json.loads(raw) if raw else {}
+            
+            # 🌟 بررسی خطا در بدنه پاسخ
+            if isinstance(result, dict) and ("error" in result or "code" in result and result.get("code") != 200):
+                print(f"⚠️ خطای صرافی: {result}")
+                return None
+                
+            return result
     except urllib.error.HTTPError as e:
         print(f"خطای HTTP {e.code} برای {api_key[:5]}: {e.read().decode(errors='replace')}")
         return None
@@ -59,7 +67,6 @@ def get_active_users():
         return []
 
 def get_balance(api_key, api_secret):
-    """دریافت موجودی کل حساب فیوچرز"""
     res = request("GET", f"{FUTURES_PREFIX}/assets", api_key, api_secret)
     if res and "summary" in res:
         return float(res["summary"].get("totalAssets", 0))
@@ -73,25 +80,21 @@ def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
     side = master_position["side"]
     leverage = master_position["leverage"]
     
-    # محاسبه مارجینی که تو استفاده کردی
     master_margin = float(master_position.get("initialMargin", 0))
     
-    # محاسبه درصد ریسک تو (مارجین به کل موجودی)
     if master_balance <= 0:
         print("❌ موجودی حساب اصلی صفر است.")
         return
-    risk_percent = master_margin / master_balance
     
-    # گرفتن موجودی کاربر
+    risk_percent = master_margin / master_balance
     user_balance = get_balance(user_key, user_secret)
+    
     if user_balance <= 0:
         print(f"❌ کاربر {user_key[:5]} موجودی ندارد.")
         return
         
-    # محاسبه مارجین برای کاربر (بر اساس همون درصد)
     user_margin = round(user_balance * risk_percent, 2)
     
-    # صرافی معمولاً مارجین کمتر از 0.1 دلار رو قبول نمیکنه
     if user_margin < 0.1:
         print(f"⚠️ مارجین محاسبه شده برای کاربر {user_key[:5]} خیلی کم است ({user_margin}$). رد شد.")
         return
@@ -113,7 +116,6 @@ def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
     print(f"✅ سفارش برای کاربر {user_key[:5]} ارسال شد. در حال جستجوی پوزیشن...")
     time.sleep(3)
     
-    # پیدا کردن پوزیشن باز
     positions = request("GET", f"{FUTURES_PREFIX}/positions", user_key, user_secret)
     if positions is None: return False
         
@@ -130,7 +132,7 @@ def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
         
     position_id = target_position.get("id")
     
-    # 🌟 کپی کردن دقیق حد ضرر و حد سود از حساب اصلی (نه درصدی)
+    # 🌟 کپی کردن دقیق حد ضرر و حد سود از حساب اصلی
     master_sl = master_position.get("stopLoss")
     master_tp = master_position.get("takeProfit")
     
@@ -145,10 +147,29 @@ def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
         "takeProfitOrderType": "TAKE_PROFIT_MARKET"
     }
     
+    print(f"⏳ تلاش برای تنظیم SL: {master_sl} و TP: {master_tp} برای {user_key[:5]}...")
     tpsl_response = request("PATCH", f"{FUTURES_PREFIX}/positions/{position_id}/tpsl", user_key, user_secret, tpsl_body)
+    
+    # 🌟 بررسی مجدد اینکه آیا TP/SL واقعاً تنظیم شد
     if tpsl_response is not None:
-        print(f"✅ TP/SL دقیقا مثل حساب اصلی برای {user_key[:5]} تنظیم شد. (SL: {master_sl}, TP: {master_tp})")
-        return True
+        time.sleep(1) # صبر کوتاه
+        check_position = request("GET", f"{FUTURES_PREFIX}/positions", user_key, user_secret)
+        if check_position:
+            items = check_position.get("items", []) if isinstance(check_position, dict) else check_position
+            for p in items:
+                if str(p.get("id")) == str(position_id):
+                    actual_sl = p.get("stopLoss")
+                    actual_tp = p.get("takeProfit")
+                    
+                    # مقایسه با دقت بالا (چون ممکنه گرد بشه)
+                    if actual_sl and actual_tp and abs(float(actual_sl) - float(master_sl)) < 1e-5 and abs(float(actual_tp) - float(master_tp)) < 1e-5:
+                        print(f"✅ TP/SL برای {user_key[:5]} با موفقیت تأیید شد.")
+                        return True
+                    else:
+                        print(f"❌ TP/SL برای {user_key[:5]} تنظیم نشد. مقدار فعلی: SL={actual_sl}, TP={actual_tp}")
+                        return False
+        print(f"⚠️ نتوانستیم وضعیت پوزیشن {user_key[:5]} را تأیید کنیم.")
+        return False
     else:
         print(f"⚠️ خطا در تنظیم TP/SL برای {user_key[:5]}.")
         return False
@@ -159,14 +180,12 @@ def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
 def main():
     print("🚀 شروع کپی معاملات نسبی...")
     
-    # ۱. گرفتن موجودی حساب اصلی
     master_balance = get_balance(MASTER_KEY, MASTER_SECRET)
     print(f"💰 موجودی حساب اصلی: {master_balance}$")
     if master_balance <= 0:
         print("❌ موجودی حساب اصلی صفر است.")
         return
         
-    # ۲. خواندن پوزیشن‌های باز حساب اصلی
     master_positions = request("GET", f"{FUTURES_PREFIX}/positions", MASTER_KEY, MASTER_SECRET)
     if not master_positions: return
 
@@ -179,12 +198,10 @@ def main():
 
     print(f"تعداد {len(open_items)} پوزیشن باز در حساب اصلی پیدا شد.")
     
-    # ۳. گرفتن لیست کاربران
     users = get_active_users()
     print(f"تعداد {len(users)} کاربر برای کپی پیدا شد.")
     if len(users) == 0: return
 
-    # ۴. کپی برای هر کاربر
     for p in open_items:
         print(f"\n--- کپی کردن {p['symbol']} {p['side']} ---")
         for user in users:
