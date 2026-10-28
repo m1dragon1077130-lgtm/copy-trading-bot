@@ -18,11 +18,11 @@ FUTURES_PREFIX = "/futures"
 # ۲. تنظیمات معامله تستی
 # ==========================================
 SYMBOL = "BTCUSDT"
-SIDE = "LONG"           # جهت معامله (LONG یا SHORT)
-MARGIN_USD = "2.0"      # مارجین ۲ دلار
-LEVERAGE = 10           # اهرم ۱۰
-STOP_LOSS_PCT = 0.02    # حد ضرر ۲ درصد
-TAKE_PROFIT_PCT = 0.04  # حد سود ۴ درصد
+SIDE = "LONG"           
+MARGIN_USD = "2.0"      
+LEVERAGE = 10           
+STOP_LOSS_PCT = 0.02    # ۲ درصد
+TAKE_PROFIT_PCT = 0.04  # ۴ درصد
 
 # ==========================================
 # ۳. توابع ارتباط با API
@@ -57,14 +57,7 @@ def request(method, uri, body=None):
 # ==========================================
 print("🚀 شروع تست باز کردن معامله...")
 
-# ۱. گرفتن قیمت فعلی بیت‌کوین
-print("⏳ دریافت قیمت فعلی BTC...")
-# (از آنجا که TTT مسیر عمومی برای قیمت ندارد، فعلاً از یک عدد فرضی یا قیمت مارک استفاده می‌کنیم. 
-# اما صرافی خودش قیمت مارکت را در لحظه اعمال می‌کند)
-# ما برای محاسبه حد ضرر و سود نیاز به قیمت ورود داریم. 
-# راه حل: اول معامله را باز می‌کنیم، بعد قیمت ورود را از پاسخ می‌گیریم و TP/SL را ست می‌کنیم.
-
-# ۲. باز کردن معامله (Market)
+# ۱. باز کردن معامله
 order_body = {
     "symbol": SYMBOL,
     "side": SIDE,
@@ -73,52 +66,61 @@ order_body = {
     "cost": MARGIN_USD
 }
 
-print(f"⏳ ارسال درخواست برای باز کردن {SIDE} روی {SYMBOL} با مارجین {MARGIN_USD} دلار...")
+print(f"⏳ ارسال درخواست برای باز کردن {SIDE} روی {SYMBOL}...")
 response = request("POST", f"{FUTURES_PREFIX}/positions", order_body)
 
 if response is None:
-    print("❌ معامله باز نشد. (مشکل از کلید، موجودی یا دسترسی)")
+    print("❌ معامله باز نشد.")
 else:
-    print("✅ معامله با موفقیت باز شد!")
-    print(f"پاسخ سرور: {json.dumps(response, indent=2)}")
+    print("✅ سفارش با موفقیت ارسال شد. (Order ID:", response.get("orderId"), ")")
     
-    # ۳. تلاش برای تنظیم حد ضرر و حد سود
-    # (بر اساس پاسخ سرور، آیدی پوزیشن و قیمت ورود را استخراج می‌کنیم)
-    # نکته: ساختار پاسخ ممکن است کمی متفاوت باشد، اما معمولاً شامل id و entryPrice است.
-    position_id = None
-    entry_price = None
+    # ۲. کمی صبر میکنیم تا صرافی پوزیشن رو ثبت کنه
+    print("⏳ صبر ۳ ثانیه‌ای برای ثبت پوزیشن در صرافی...")
+    time.sleep(3)
     
-    if isinstance(response, dict):
-        position_id = response.get("id")
-        # گاهی پاسخ در کلید items یا data است
-        if not position_id and "data" in response:
-            position_id = response["data"].get("id")
-            entry_price = response["data"].get("entryPrice")
-        else:
-            entry_price = response.get("entryPrice")
-
-    if position_id and entry_price:
-        entry_price = float(entry_price)
-        if SIDE == "LONG":
-            sl_price = round(entry_price * (1 - STOP_LOSS_PCT), 2)
-            tp_price = round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
-        else:
-            sl_price = round(entry_price * (1 + STOP_LOSS_PCT), 2)
-            tp_price = round(entry_price * (1 - TAKE_PROFIT_PCT), 2)
-            
-        print(f"⏳ تنظیم حد ضرر ({sl_price}) و حد سود ({tp_price})...")
-        
-        tpsl_body = {
-            "stopLoss": str(sl_price),
-            "takeProfit": str(tp_price),
-            "stopLossOrderType": "STOP_MARKET",
-            "takeProfitOrderType": "TAKE_PROFIT_MARKET"
-        }
-        
-        tpsl_response = request("PATCH", f"{FUTURES_PREFIX}/positions/{position_id}/tpsl", tpsl_body)
-        if tpsl_response is not None:
-            print("✅ حد ضرر و حد سود با موفقیت تنظیم شد!")
-        else:
-            print("⚠️ معامله باز شد اما تنظیم TP/SL با خطا مواجه شد. (ممکنه دستی باید انجام بشه)")
+    # ۳. لیست پوزیشن‌ها رو می‌گیریم تا جدیدترین پوزیشن باز رو پیدا کنیم
+    print("🔍 در حال جستجوی پوزیشن باز...")
+    positions = request("GET", f"{FUTURES_PREFIX}/positions")
+    
+    if positions is None:
+        print("❌ خطا در خواندن پوزیشن‌ها.")
     else:
-        print("⚠️ معامله باز شد اما آیدی یا قیمت ورود در پاسخ پیدا نشد. (TP/SL تنظیم نشد)")
+        items = positions.get("items", []) if isinstance(positions, dict) else positions
+        
+        # پیدا کردن پوزیشن باز روی نماد مورد نظر
+        target_position = None
+        for p in items:
+            if p.get("symbol") == SYMBOL and p.get("status") == "OPENED" and p.get("isActive") == True:
+                # اگر چند تا پوزیشن داریم، جدیدترین رو انتخاب میکنیم
+                if target_position is None or p.get("createdAt", "") > target_position.get("createdAt", ""):
+                    target_position = p
+                    
+        if target_position is None:
+            print("❌ هیچ پوزیشن بازی برای این نماد پیدا نشد.")
+        else:
+            position_id = target_position.get("id")
+            entry_price = float(target_position.get("entryPrice"))
+            print(f"✅ پوزیشن پیدا شد! ID: {position_id} | قیمت ورود: {entry_price}")
+            
+            # ۴. محاسبه حد ضرر و سود
+            if SIDE == "LONG":
+                sl_price = round(entry_price * (1 - STOP_LOSS_PCT), 2)
+                tp_price = round(entry_price * (1 + TAKE_PROFIT_PCT), 2)
+            else:
+                sl_price = round(entry_price * (1 + STOP_LOSS_PCT), 2)
+                tp_price = round(entry_price * (1 - TAKE_PROFIT_PCT), 2)
+                
+            print(f"⏳ تنظیم حد ضرر ({sl_price}) و حد سود ({tp_price})...")
+            
+            tpsl_body = {
+                "stopLoss": str(sl_price),
+                "takeProfit": str(tp_price),
+                "stopLossOrderType": "STOP_MARKET",
+                "takeProfitOrderType": "TAKE_PROFIT_MARKET"
+            }
+            
+            tpsl_response = request("PATCH", f"{FUTURES_PREFIX}/positions/{position_id}/tpsl", tpsl_body)
+            if tpsl_response is not None:
+                print("✅ حد ضرر و حد سود با موفقیت تنظیم شد!")
+            else:
+                print("⚠️ خطا در تنظیم TP/SL.")
