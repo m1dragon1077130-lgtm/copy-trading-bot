@@ -1,4 +1,4 @@
-name: Fix TP/SL
+name: Update TP/SL
 on:
   workflow_dispatch:
 
@@ -10,10 +10,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run Fix Script
+      - name: Run Update Script
         env:
           MASTER_API_KEY: ${{ secrets.MASTER_API_KEY }}
           MASTER_API_SECRET: ${{ secrets.MASTER_API_SECRET }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python fix_sl_tp.py
+        run: python update_tpsl.py
