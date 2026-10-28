@@ -33,7 +33,6 @@ def request(method, uri, api_key, api_secret):
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as e:
-        # 🌟 چاپ خطای دقیق صرافی در لاگ‌ها
         print(f"❌ خطای HTTP {e.code} برای {api_key[:5]}: {e.read().decode(errors='replace')}")
         return None
     except Exception as e:
@@ -51,7 +50,6 @@ def get_active_users():
         return []
 
 def update_stats_in_db(api_key, balance, pos_count, pnl, has_tpsl):
-    # ۱. پاک کردن رکورد قبلی (برای جلوگیری از خطای تکراری)
     delete_url = f"{DB_URL}/rest/v1/admin_stats?api_key=eq.{api_key}"
     del_headers = {"apikey": DB_KEY, "Authorization": f"Bearer {DB_KEY}"}
     try:
@@ -60,7 +58,6 @@ def update_stats_in_db(api_key, balance, pos_count, pnl, has_tpsl):
     except:
         pass
 
-    # ۲. درج رکورد جدید
     url = f"{DB_URL}/rest/v1/admin_stats"
     headers = {
         "apikey": DB_KEY, 
@@ -100,26 +97,36 @@ def main():
         
         # ۱. گرفتن موجودی
         assets = request("GET", f"{FUTURES_PREFIX}/assets", api_key, api_secret)
+        
+        # 🌟 اگر خطا داد (None برگشت)، از این کاربر رد شو و اطلاعات غلط ذخیره نکن
+        if assets is None:
+            print(f"⚠️ رد کردن کاربر {api_key[:5]} به دلیل خطا در دریافت اطلاعات.")
+            continue
+            
         balance = 0.0
-        if assets and "summary" in assets:
+        if "summary" in assets:
             balance = float(assets["summary"].get("totalAssets", 0))
             
         # ۲. گرفتن پوزیشن‌ها
         positions = request("GET", f"{FUTURES_PREFIX}/positions", api_key, api_secret)
+        
+        if positions is None:
+            print(f"⚠️ رد کردن کاربر {api_key[:5]} به دلیل خطا در دریافت پوزیشن‌ها.")
+            continue
+            
         pos_count = 0
         total_pnl = 0.0
         has_tpsl = False
         
-        if positions:
-            items = positions.get("items", [])
-            open_pos = [p for p in items if p.get("status") == "OPENED"]
-            pos_count = len(open_pos)
-            
-            for p in open_pos:
-                total_pnl += float(p.get("unrealizedPnL") or 0)
-                if p.get("stopLoss") and p.get("takeProfit"):
-                    has_tpsl = True
-                    
+        items = positions.get("items", [])
+        open_pos = [p for p in items if p.get("status") == "OPENED"]
+        pos_count = len(open_pos)
+        
+        for p in open_pos:
+            total_pnl += float(p.get("unrealizedPnL") or 0)
+            if p.get("stopLoss") and p.get("takeProfit"):
+                has_tpsl = True
+                
         print(f"👤 کاربر {api_key[:5]}: موجودی={balance:.2f}$, پوزیشن={pos_count}, PnL={total_pnl:.2f}$, TP/SL={has_tpsl}")
         
         # ۳. ذخیره در دیتابیس
