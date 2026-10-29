@@ -75,7 +75,7 @@ def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
     leverage = master_position["leverage"]
     master_entry = float(master_position["entryPrice"])
     
-    # 🌟 محاسبه درصد فاصله حد ضرر و سود از قیمت ورود مستر
+    # محاسبه درصد فاصله حد ضرر و سود از قیمت ورود مستر
     master_sl = master_position.get("stopLoss")
     master_tp = master_position.get("takeProfit")
     
@@ -99,8 +99,10 @@ def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
         return
         
     user_margin = round(user_balance * risk_percent, 2)
-    if user_margin < 0.1:
-        print(f"⚠️ مارجین محاسبه شده برای کاربر {user_key[:5]} خیلی کم است ({user_margin}$). رد شد.")
+    
+    # 🌟 جلوگیری از خطای "Collateral is below the minimum"
+    if user_margin < 1.0:
+        print(f"⚠️ مارجین محاسبه شده برای {user_key[:5]} ({user_margin}$) کمتر از حد مجاز صرافی (۱ دلار) است. رد شد.")
         return
 
     print(f"⏳ باز کردن {side} برای {user_key[:5]} با مارجین {user_margin}$ و اهرم {leverage}x...")
@@ -128,7 +130,7 @@ def copy_trade_for_user(master_position, user_key, user_secret, master_balance):
     position_id = target_position.get("id")
     user_entry = float(target_position["entryPrice"])
     
-    # 🌟 محاسبه SL و TP جدید برای کاربر بر اساس درصدهای مستر
+    # محاسبه SL و TP جدید برای کاربر بر اساس درصدهای مستر
     if sl_pct and tp_pct:
         if side == "LONG":
             user_sl = round(user_entry * (1 - sl_pct), 8)
